@@ -5793,7 +5793,9 @@ function approximateDistanceM(latA, lonA, latB, lonB) {
   ));
 }
 
-const GEV_REALTIME_TOOLS = [
+// Exported so the CLI can serve the same schemas to an agent that the voice
+// model gets — one definition, no second copy to drift.
+export const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'fly_to_location',

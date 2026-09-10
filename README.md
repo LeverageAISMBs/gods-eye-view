@@ -32,7 +32,7 @@ Photorealistic 3D globe. Live aircraft, ships, satellites, earthquakes, traffic,
 
 <div align="center">
 
-**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Under the Hood](#-under-the-hood) · [Keys & Costs](#-api-keys)**
+**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Drive It From a CLI](#-drive-it-from-a-cli) · [Under the Hood](#-under-the-hood) · [Keys & Costs](#-api-keys)**
 
 </div>
 
@@ -361,6 +361,60 @@ src/
 ```
 
 See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runtime reference.
+
+---
+
+## 🤖 Drive It From a CLI
+
+Everything the voice model can do, `gev` can do from a command line — so an AI
+agent can operate the globe, monitor a place, and capture footage for a video
+pipeline.
+
+```bash
+npm run dev                                   # in one terminal
+npm run gev -- tools                          # the 28 drivable tools
+npm run gev -- exec fly_to_location --args '{"query":"Austin, Texas"}'
+npm run gev -- record examples/austin-flights.shotlist.json --out takes/austin
+```
+
+A **shot list** is the instruction format: an ordered plan of tool calls, waits,
+and capture windows. Steps marked `"record": true` are the ones that become
+footage — setup moves are not filmed.
+
+```json
+{
+  "name": "austin-flights",
+  "viewport": { "width": 1920, "height": 1080 },
+  "capture": { "fps": 30 },
+  "steps": [
+    { "tool": "set_layer_visibility", "args": { "layerId": "flights", "enabled": true } },
+    { "tool": "fly_to_location", "args": { "query": "Austin, Texas" }, "settleMs": 6000 },
+    { "tool": "move_camera", "args": { "motion": "orbit" }, "record": true, "durationMs": 10000 }
+  ]
+}
+```
+
+The run writes numbered PNG frames and, when `ffmpeg` is on PATH, encodes an
+H.264 master (`-crf 16`, `yuv420p`, faststart) sized for re-encoding downstream.
+**ffmpeg is optional** — without it the frames are kept and the exact encode
+command is printed, because the frames are the deliverable either way.
+
+`--json` makes every command machine-readable, which is how an agent should
+drive it. `gev tools --json` returns the full JSON schemas, so an agent can
+discover the surface rather than be told it.
+
+Notes worth knowing before your first take:
+
+- **Capture on a GPU machine.** The CLI runs without one (it permits Chrome's
+  SwiftShader fallback, or Cesium will not start at all), but software rendering
+  is slow and the frames look flat.
+- The first-run launcher is suppressed automatically — it otherwise sits in the
+  middle of every frame. Pass `--show-first-run` to film it deliberately.
+- Hide the HUD for clean plates with a `set_hud` step; it is a tool like any
+  other.
+- `settleMs` waits for the globe to stop streaming tiles before the next step.
+  Cutting while terrain is still resolving is the fastest way to make footage
+  look cheap.
 
 ---
 
