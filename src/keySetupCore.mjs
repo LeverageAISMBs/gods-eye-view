@@ -38,7 +38,17 @@ export const KEY_SETUP_KEYS = Object.freeze([
     clientExposed: true,
   }),
   Object.freeze({
+    id: 'openrouter',
+    title: 'OPENROUTER',
+    unlocks: 'One key for every model — HUD summaries + the voice model catalog',
+    getUrl: 'https://openrouter.ai/keys',
+    envVars: Object.freeze(['OPENROUTER_API_KEY']),
+    tier: 'metered',
+  }),
+  Object.freeze({
     id: 'openai',
+    // Still its own row: OpenRouter has no Realtime API, so the mic needs this
+    // key specifically even on an OpenRouter-default install.
     title: 'OPENAI',
     unlocks: 'Voice control — talk to the planet',
     getUrl: 'https://platform.openai.com/api-keys',

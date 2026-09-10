@@ -12,6 +12,7 @@ export const CREDENTIALS = Object.freeze([
   { name: 'GOOGLE_MAPS_API_KEY', label: 'Google Maps', keychain: [['google-maps-api', 'api-key'], ['google-maps-api', 'default'], ['google-maps-api', 'key']] },
   { name: 'CESIUM_ION_TOKEN', label: 'Cesium ion', keychain: [['cesium-ion', 'token']] },
   { name: 'OPENAI_API_KEY', label: 'OpenAI voice', keychain: [['openai-api', 'api-key']] },
+  { name: 'OPENROUTER_API_KEY', label: 'OpenRouter models', keychain: [['openrouter-api', 'api-key']] },
   { name: 'AISSTREAM_API_KEY', label: 'AISStream vessels', keychain: [['aisstream-api', 'api-key']] },
   { name: 'FIRMS_MAP_KEY', label: 'NASA FIRMS fires', keychain: [['firms-map', 'map-key']] },
   { name: 'TOMTOM_API_KEY', label: 'TomTom traffic', keychain: [['tomtom-api', 'api-key']] },
@@ -141,7 +142,12 @@ export function buildCapabilitySummary(credentials) {
     flights: configured('OPENSKY_CLIENT_ID') && configured('OPENSKY_CLIENT_SECRET')
       ? 'OpenSky OAuth credentials present (runtime mode and validity not verified)'
       : 'OpenSky OAuth credentials not configured',
+    // Voice needs a Realtime-capable provider specifically — an OpenRouter key
+    // powers the model catalog and HUD summaries but cannot mint a mic session.
     voice: configured('OPENAI_API_KEY') ? 'available' : 'off until an OpenAI key is added',
+    models: configured('OPENROUTER_API_KEY')
+      ? 'OpenRouter catalog (every voice-capable model, with pricing)'
+      : 'off until an OpenRouter key is added',
     vessels: configured('AISSTREAM_API_KEY') ? 'live AISStream feed' : 'off until an AISStream key is added',
     fires: configured('FIRMS_MAP_KEY') ? 'live NASA FIRMS feed' : 'off until a FIRMS key is added',
     traffic: configured('TOMTOM_API_KEY') ? 'live TomTom flow' : 'built-in traffic simulation',
@@ -201,10 +207,13 @@ export function formatSetupReport(report, { readyMessage } = {}) {
     `Fires:   ${report.capabilities.fires}`,
     `Traffic: ${report.capabilities.traffic}`,
     `Missions: ${report.capabilities.missions}`,
+    `Models:  ${report.capabilities.models}`,
     '',
     'Configured providers:',
     ...CREDENTIALS.map((spec) => {
-      const state = report.credentials[spec.name];
+      // A credential the probe did not report is simply not configured — a new
+      // row in CREDENTIALS must never crash the report that explains setup.
+      const state = report.credentials[spec.name] || { configured: false };
       return state.configured
         ? `  [OK] ${spec.label} (${state.source})`
         : `  [--] ${spec.label}`;

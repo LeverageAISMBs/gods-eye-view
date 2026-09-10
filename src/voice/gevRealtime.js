@@ -12,6 +12,26 @@ import {
 
 const TOKEN_URL = '/api/realtime/token';
 const REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
+
+/**
+ * Where to POST the SDP offer, as echoed by /api/realtime/token.
+ *
+ * The server resolves the voice provider (see src/ai/providers.mjs), so an
+ * OpenAI-compatible gateway serves the call on ITS origin, not OpenAI's. Only
+ * an absolute https URL is honoured — a stripped or rewritten header must
+ * degrade to the OpenAI default rather than send the ephemeral secret
+ * somewhere a proxy chose.
+ */
+function resolveRealtimeCallsUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return REALTIME_CALLS_URL;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'https:' ? parsed.toString() : REALTIME_CALLS_URL;
+  } catch {
+    return REALTIME_CALLS_URL;
+  }
+}
 const STATUS = {
   idle: 'OFF',
   connecting: 'CONNECTING',
@@ -376,6 +396,7 @@ export class GevRealtimeController {
     try {
       const minted = await fetchRealtimeToken(this.voiceTier);
       const token = minted.token;
+      const callsUrl = minted.callsUrl || REALTIME_CALLS_URL;
       if (this.abandonStart(epoch, { localStream, localPc })) return;
       // Bind the session meter to the model actually served. An env override
       // (OPENAI_REALTIME_MODEL[_MINI]) can point a tier at a different model,
@@ -475,7 +496,7 @@ export class GevRealtimeController {
         sdpLength: offer.sdp?.length || 0,
         connection: this.connectionDiagnostics(),
       });
-      const sdpResponse = await fetch(REALTIME_CALLS_URL, {
+      const sdpResponse = await fetch(callsUrl, {
         method: 'POST',
         body: offer.sdp,
         headers: {
@@ -2321,6 +2342,7 @@ async function fetchRealtimeToken(tier = DEFAULT_VOICE_TIER) {
     || data?.session?.model
     || null;
   const servedTier = response.headers?.get?.('X-GEV-Voice-Tier') || null;
+  const callsUrl = resolveRealtimeCallsUrl(response.headers?.get?.('X-GEV-Realtime-Calls-Url'));
   if (!response.ok) {
     // OpenAI error bodies are objects ({error:{message,type,...}}); only the
     // key-absent server case is a bare string. Render either without the
@@ -2332,7 +2354,7 @@ async function fetchRealtimeToken(tier = DEFAULT_VOICE_TIER) {
   }
   const token = data?.value || data?.client_secret?.value || data?.client_secret;
   if (!token) throw new Error('Realtime token response did not include a client secret');
-  return { token, model: servedModel, tier: servedTier };
+  return { token, model: servedModel, tier: servedTier, callsUrl };
 }
 
 function extractFunctionCalls(event) {

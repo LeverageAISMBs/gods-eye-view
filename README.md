@@ -375,13 +375,14 @@ and configuration details.
 
 ### Choose the capabilities you want
 
-Six keys. Four have a free tier, and the two 🔴 ones are metered:
+Seven keys. Four have a free tier, and the three 🔴 ones are metered:
 
 | | Key | Why | Get it |
 |---|-----|-----|--------|
 | 🟡 | **Cesium ion** | 🗺️ Google Photorealistic 3D, world terrain, and additional ion-hosted imagery stacks. The free Community plan is for eligible individual, personal/non-commercial use and has quotas | [cesium.com/ion](https://cesium.com/ion) — use a public `assets:read` token and check current [pricing/eligibility](https://cesium.com/platform/cesium-ion/pricing/) |
 | 🔴 | **Google Maps** | Direct Google Photorealistic 3D + Google place search ([Map Tiles API](https://developers.google.com/maps/documentation/tile)) | [Google Cloud Console](https://console.cloud.google.com/) — URL-restrict it |
-| 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. The mini model works; the standard model is noticeably smarter. Want Gemini or another provider behind the mic? PRs welcome | [platform.openai.com](https://platform.openai.com) — metered, see costs below |
+| 🔴 | **OpenRouter** | 🧠 One key for every model. Serves the AI HUD summary and the voice-model catalog (`/api/ai/voice-models` lists every voice-capable model it can reach, with pricing). **Default provider** — see [Provider adapter](#provider-adapter) | [openrouter.ai/keys](https://openrouter.ai/keys) — metered |
+| 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. The mini model works; the standard model is noticeably smarter. Still required for the mic on any install: OpenRouter has no Realtime API | [platform.openai.com](https://platform.openai.com) — metered, see costs below |
 | 🟡 | **AISStream** | 🚢 Live global ships | [aisstream.io](https://aisstream.io) — free signup |
 | 🟡 | **NASA FIRMS** | 🔥 Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov/api/map_key/) — free |
 | 🟡 | **TomTom** | 🚦 Live flow speeds and congestion colors for the simulated traffic layer | [developer.tomtom.com](https://developer.tomtom.com) — free tier available |
@@ -389,6 +390,30 @@ Six keys. Four have a free tier, and the two 🔴 ones are metered:
 ![Diving from city-scale live congestion straight into an intersection's public camera](docs/media/05-traffic-to-cctv.gif)
 
 *What the TomTom key buys you: rush-hour density painted on the city — then dive from the jam straight into the camera watching it.*
+
+### Provider adapter
+
+GEV talks to a model provider on three planes, and they resolve **separately**:
+
+| Plane | What it does | Who serves it |
+|---|---|---|
+| Catalog | Lists every voice-capable model, with pricing (`/api/ai/voice-models`) | The default provider |
+| Text | The five-word AI HUD summary (`/api/openai/hud-summary`) | The default provider |
+| Realtime voice | Mints the ephemeral WebRTC secret behind the mic (`/api/realtime/token`) | The first provider that *can* |
+
+`GEV_AI_PROVIDER` picks the default — `openrouter` (the default), `openai`, or
+`openai-compatible` for any gateway you point at with `GEV_AI_BASE_URL` (Azure
+OpenAI, LiteLLM, vLLM, Ollama). Unset, it auto-detects in that order by which
+key is present.
+
+**The mic is the exception, and deliberately so.** A Realtime session is a
+WebRTC transport minted from `/realtime/client_secrets` — not part of the
+OpenAI-compatible surface. OpenRouter's audio support is turn-based
+`chat/completions` with `modalities: ["text","audio"]`, which is a different
+thing. So voice resolves its own provider: adding an OpenRouter key moves the
+catalog and the HUD summary without touching a mic that already runs on
+`OPENAI_API_KEY`. `GET /api/ai/providers` reports exactly which provider is
+serving which plane, with no keys in the payload.
 
 ### Cherry on top
 
