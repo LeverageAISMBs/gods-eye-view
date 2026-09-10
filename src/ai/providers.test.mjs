@@ -14,13 +14,18 @@ import {
   describeAiProvider,
   isKnownAiProvider,
   isTruthyFlag,
+  SUPPORTED_REALTIME_TRANSPORTS,
+  isSupportedRealtimeTransport,
   resolveAiProvider,
   resolveDefaultAiProvider,
   resolveRealtimeProvider,
+  resolveUnsupportedRealtimeProvider,
 } from './providers.mjs';
 
-test('registry exposes exactly the three adapters, OpenRouter as default', () => {
-  assert.deepEqual(AI_PROVIDER_IDS, ['openrouter', 'openai', 'openai-compatible']);
+test('registry exposes the four adapters, OpenRouter as default', () => {
+  assert.deepEqual(AI_PROVIDER_IDS, [
+    'openrouter', 'openai', 'google-gemini', 'openai-compatible',
+  ]);
   assert.equal(DEFAULT_AI_PROVIDER, 'openrouter');
 });
 
@@ -28,6 +33,48 @@ test('only OpenAI-shaped realtime providers advertise the realtime capability', 
   assert.equal(aiProviderDefinition('openrouter').capabilities.realtime, false);
   assert.equal(aiProviderDefinition('openai').capabilities.realtime, true);
   assert.equal(aiProviderDefinition('openrouter').capabilities.audioChat, true);
+});
+
+test('a live-voice transport is declared by name, separately from what runs it', () => {
+  // Gemini Live is a real API — over WSS with hand-framed PCM, not WebRTC/SDP.
+  // The registry says so rather than pretending the capability is absent.
+  assert.equal(aiProviderDefinition('google-gemini').realtimeTransport, 'websocket_bidi');
+  assert.equal(aiProviderDefinition('openai').realtimeTransport, 'webrtc_sdp');
+  assert.equal(aiProviderDefinition('openrouter').realtimeTransport, null);
+  // This build ships exactly one client, so only that transport is runnable.
+  assert.deepEqual(SUPPORTED_REALTIME_TRANSPORTS, ['webrtc_sdp']);
+  assert.equal(isSupportedRealtimeTransport('websocket_bidi'), false);
+});
+
+test('a Gemini key serves catalog and text but is never handed the mic', () => {
+  const env = { GEMINI_API_KEY: 'gem-1' };
+  const provider = resolveAiProvider('google-gemini', env);
+  assert.equal(provider.configured, true);
+  assert.equal(provider.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+  assert.equal(provider.capabilities.catalog, true);
+  assert.equal(provider.capabilities.text, true);
+  // Declared transport, no client for it -> the capability gate says no. Handing
+  // this to the WebRTC dialer would produce a mic that never connects.
+  assert.equal(provider.realtimeTransport, 'websocket_bidi');
+  assert.equal(provider.capabilities.realtime, false);
+  assert.equal(resolveRealtimeProvider(env), null);
+  assert.equal(resolveDefaultAiProvider(env).id, 'google-gemini');
+});
+
+test('an unrunnable voice provider is surfaced to explain the mic, not to serve it', () => {
+  const gemini = resolveUnsupportedRealtimeProvider({ GEMINI_API_KEY: 'gem-1' });
+  assert.equal(gemini?.id, 'google-gemini');
+  assert.equal(gemini?.realtimeTransport, 'websocket_bidi');
+  // Nothing configured, or a provider that has no live-voice API at all.
+  assert.equal(resolveUnsupportedRealtimeProvider({}), null);
+  assert.equal(resolveUnsupportedRealtimeProvider({ OPENROUTER_API_KEY: 'or' }), null);
+  // An OpenAI key runs the mic, so nothing needs explaining.
+  assert.equal(resolveUnsupportedRealtimeProvider({ OPENAI_API_KEY: 'oa' }), null);
+});
+
+test('the secondary Gemini key env var is honoured', () => {
+  assert.equal(resolveAiProvider('google-gemini', { GOOGLE_AI_API_KEY: 'g' }).configured, true);
+  assert.equal(resolveAiProvider('google-gemini', {}).configured, false);
 });
 
 test('unknown, hostile, and inherited ids resolve to the default provider', () => {

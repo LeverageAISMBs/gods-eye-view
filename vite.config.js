@@ -53,6 +53,7 @@ import {
   resolveAiProvider,
   resolveDefaultAiProvider,
   resolveRealtimeProvider,
+  resolveUnsupportedRealtimeProvider,
 } from './src/ai/providers.mjs';
 import {
   AiProviderError,
@@ -1403,6 +1404,8 @@ const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
 const HUD_SUMMARY_MODEL_DEFAULTS = Object.freeze({
   openrouter: 'openai/gpt-5-nano',
   openai: OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
+  // Gemini's OpenAI-compat layer takes bare Gemini model ids.
+  'google-gemini': 'gemini-2.5-flash-lite',
   // A private gateway names its own models; there is nothing sane to guess.
   'openai-compatible': '',
 });
@@ -5293,13 +5296,26 @@ export function openAiRealtimeProxy() {
       // default is OpenRouter still runs the mic on its OpenAI key.
       const provider = resolveRealtimeProvider(process.env);
       if (!provider) {
+        // A configured provider may have a live-voice API this build has no
+        // client for (Gemini Live speaks WSS, not WebRTC/SDP). Saying THAT beats
+        // "no provider found" when the user has that key sitting right there.
+        const unrunnable = resolveUnsupportedRealtimeProvider(process.env);
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({
-          error: 'Voice control needs a Realtime-capable provider — set OPENAI_API_KEY '
-            + '(OpenRouter has no Realtime API)',
-          code: 'REALTIME_NOT_CONFIGURED',
-        }));
+        res.end(JSON.stringify(unrunnable
+          ? {
+            error: `${unrunnable.label} has a live-voice API, but over the `
+              + `${unrunnable.realtimeTransport} transport, which this build does not `
+              + 'implement. Voice needs OPENAI_API_KEY.',
+            code: 'REALTIME_TRANSPORT_UNSUPPORTED',
+            provider: unrunnable.id,
+            transport: unrunnable.realtimeTransport,
+          }
+          : {
+            error: 'Voice control needs a Realtime-capable provider — set OPENAI_API_KEY '
+              + '(OpenRouter has no Realtime API)',
+            code: 'REALTIME_NOT_CONFIGURED',
+          }));
         return;
       }
 

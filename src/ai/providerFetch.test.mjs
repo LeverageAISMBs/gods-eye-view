@@ -153,6 +153,38 @@ test('a non-JSON error body still produces a readable message', async () => {
   );
 });
 
+test("Google's array-wrapped error body still yields its message", async () => {
+  // Verbatim shape from POST /v1beta/openai/chat/completions with a bad key,
+  // probed 2026-09-10. Its /models endpoint returns the bare object instead.
+  const GEMINI = resolveAiProvider('google-gemini', { GEMINI_API_KEY: 'bad' });
+  await assert.rejects(
+    () => requestProvider({
+      provider: GEMINI,
+      path: '/chat/completions',
+      fetchImpl: scriptedFetch([
+        jsonResponse(400, [{ error: { code: 400, message: 'Please pass a valid API key', status: 'INVALID_ARGUMENT' } }]),
+      ]),
+      delay: recordingDelay(),
+    }),
+    (error) => {
+      assert.equal(error.message, 'Please pass a valid API key');
+      assert.equal(error.status, 400);
+      return true;
+    }
+  );
+
+  // A multi-element array is not this shape; fall back rather than guess.
+  await assert.rejects(
+    () => requestProvider({
+      provider: GEMINI,
+      path: '/chat/completions',
+      fetchImpl: scriptedFetch([jsonResponse(400, [{ error: { message: 'a' } }, { error: { message: 'b' } }])]),
+      delay: recordingDelay(),
+    }),
+    (error) => error.message === 'Google Gemini request failed (HTTP 400)'
+  );
+});
+
 test('backoff is exponential, jittered, and capped', () => {
   assert.equal(backoffDelayMs(1, 400, () => 1), 400);
   assert.equal(backoffDelayMs(3, 400, () => 1), 1600);

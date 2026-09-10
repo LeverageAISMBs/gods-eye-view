@@ -73,8 +73,17 @@ export function backoffDelayMs(attempt, baseMs = DEFAULT_BACKOFF_MS, random = Ma
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/** Pull the most useful message out of a provider's error body. */
-function providerErrorMessage(body, fallback) {
+/**
+ * Pull the most useful message out of a provider's error body.
+ *
+ * Google's OpenAI-compat layer wraps chat/completions errors in a single-element
+ * ARRAY — `[{"error":{"message":"Please pass a valid API key"}}]` — while its
+ * /models endpoint returns the bare object. Unwrap before reading, or a Gemini
+ * key problem degrades to a generic "request failed (HTTP 400)" that tells the
+ * user nothing actionable.
+ */
+function providerErrorMessage(rawBody, fallback) {
+  const body = Array.isArray(rawBody) && rawBody.length === 1 ? rawBody[0] : rawBody;
   if (typeof body?.error?.message === 'string' && body.error.message.trim()) {
     return body.error.message.trim();
   }

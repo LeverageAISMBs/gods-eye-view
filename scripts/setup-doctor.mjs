@@ -13,6 +13,7 @@ export const CREDENTIALS = Object.freeze([
   { name: 'CESIUM_ION_TOKEN', label: 'Cesium ion', keychain: [['cesium-ion', 'token']] },
   { name: 'OPENAI_API_KEY', label: 'OpenAI voice', keychain: [['openai-api', 'api-key']] },
   { name: 'OPENROUTER_API_KEY', label: 'OpenRouter models', keychain: [['openrouter-api', 'api-key']] },
+  { name: 'GEMINI_API_KEY', label: 'Google Gemini models', keychain: [['gemini-api', 'api-key']] },
   { name: 'AISSTREAM_API_KEY', label: 'AISStream vessels', keychain: [['aisstream-api', 'api-key']] },
   { name: 'FIRMS_MAP_KEY', label: 'NASA FIRMS fires', keychain: [['firms-map', 'map-key']] },
   { name: 'TOMTOM_API_KEY', label: 'TomTom traffic', keychain: [['tomtom-api', 'api-key']] },
@@ -147,7 +148,9 @@ export function buildCapabilitySummary(credentials) {
     voice: configured('OPENAI_API_KEY') ? 'available' : 'off until an OpenAI key is added',
     models: configured('OPENROUTER_API_KEY')
       ? 'OpenRouter catalog (every voice-capable model, with pricing)'
-      : 'off until an OpenRouter key is added',
+      : configured('GEMINI_API_KEY')
+        ? 'Gemini catalog through the OpenAI-compatibility layer'
+        : 'off until an OpenRouter or Gemini key is added',
     vessels: configured('AISSTREAM_API_KEY') ? 'live AISStream feed' : 'off until an AISStream key is added',
     fires: configured('FIRMS_MAP_KEY') ? 'live NASA FIRMS feed' : 'off until a FIRMS key is added',
     traffic: configured('TOMTOM_API_KEY') ? 'live TomTom flow' : 'built-in traffic simulation',

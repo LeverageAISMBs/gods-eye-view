@@ -375,7 +375,7 @@ and configuration details.
 
 ### Choose the capabilities you want
 
-Seven keys. Four have a free tier, and the three 🔴 ones are metered:
+Eight keys. Four have a free tier, and the four 🔴 ones are metered:
 
 | | Key | Why | Get it |
 |---|-----|-----|--------|
@@ -383,6 +383,7 @@ Seven keys. Four have a free tier, and the three 🔴 ones are metered:
 | 🔴 | **Google Maps** | Direct Google Photorealistic 3D + Google place search ([Map Tiles API](https://developers.google.com/maps/documentation/tile)) | [Google Cloud Console](https://console.cloud.google.com/) — URL-restrict it |
 | 🔴 | **OpenRouter** | 🧠 One key for every model. Serves the AI HUD summary and the voice-model catalog (`/api/ai/voice-models` lists every voice-capable model it can reach, with pricing). **Default provider** — see [Provider adapter](#provider-adapter) | [openrouter.ai/keys](https://openrouter.ai/keys) — metered |
 | 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. The mini model works; the standard model is noticeably smarter. Still required for the mic on any install: OpenRouter has no Realtime API | [platform.openai.com](https://platform.openai.com) — metered, see costs below |
+| 🔴 | **Google Gemini** | 🧠 Gemini models for the AI HUD summary and the model catalog, via Google's OpenAI-compatibility layer. Not the mic — see below | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — metered |
 | 🟡 | **AISStream** | 🚢 Live global ships | [aisstream.io](https://aisstream.io) — free signup |
 | 🟡 | **NASA FIRMS** | 🔥 Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov/api/map_key/) — free |
 | 🟡 | **TomTom** | 🚦 Live flow speeds and congestion colors for the simulated traffic layer | [developer.tomtom.com](https://developer.tomtom.com) — free tier available |
@@ -401,10 +402,29 @@ GEV talks to a model provider on three planes, and they resolve **separately**:
 | Text | The five-word AI HUD summary (`/api/openai/hud-summary`) | The default provider |
 | Realtime voice | Mints the ephemeral WebRTC secret behind the mic (`/api/realtime/token`) | The first provider that *can* |
 
-`GEV_AI_PROVIDER` picks the default — `openrouter` (the default), `openai`, or
-`openai-compatible` for any gateway you point at with `GEV_AI_BASE_URL` (Azure
-OpenAI, LiteLLM, vLLM, Ollama). Unset, it auto-detects in that order by which
-key is present.
+`GEV_AI_PROVIDER` picks the default — `openrouter` (the default), `openai`,
+`google-gemini`, or `openai-compatible` for any gateway you point at with
+`GEV_AI_BASE_URL` (Azure OpenAI, LiteLLM, vLLM, Ollama). Unset, it auto-detects
+in that order by which key is present.
+
+**Live voice is a named transport, not a checkbox.** A provider declares which
+one it speaks, and GEV only selects a provider whose transport it actually
+implements:
+
+| Transport | Who speaks it | Runs the mic today |
+|---|---|---|
+| `webrtc_sdp` | OpenAI Realtime, and gateways proxying it | ✅ |
+| `websocket_bidi` | Gemini Live | ❌ no client in this build |
+| *(none)* | OpenRouter | ❌ no live-voice API at all |
+
+Gemini Live is a real live-voice API — it just isn't the same shape. It mints at
+`POST /v1beta/auth_tokens`, connects over WSS to
+`BidiGenerateContentConstrained`, and carries hand-framed base64 PCM16 @16 kHz
+with tool calls as socket messages. OpenAI Realtime mints a client secret, then
+exchanges an SDP offer and runs media tracks plus a data channel. Supporting
+both means two voice clients, not one adapter — so a Gemini key powers the
+catalog and HUD summaries, and `/api/realtime/token` says exactly that rather
+than handing the browser a session it cannot run.
 
 **The mic is the exception, and deliberately so.** A Realtime session is a
 WebRTC transport minted from `/realtime/client_secrets` — not part of the

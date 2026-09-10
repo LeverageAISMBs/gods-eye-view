@@ -29,13 +29,36 @@
  * @module ai/providers
  */
 
-/** @typedef {'openrouter'|'openai'|'openai-compatible'} AiProviderId */
+/** @typedef {'openrouter'|'openai'|'google-gemini'|'openai-compatible'} AiProviderId */
+
+/**
+ * How a provider carries a live voice session.
+ *
+ * NOT interchangeable, which is exactly why this is a named transport and not a
+ * `realtime: true` flag. Verified against both vendors' docs on 2026-09-10:
+ *
+ *   webrtc_sdp      OpenAI Realtime. Mint at POST /realtime/client_secrets, then
+ *                   the browser POSTs an SDP offer to /realtime/calls and runs an
+ *                   RTCPeerConnection: audio on media tracks, tool calls on an
+ *                   RTCDataChannel.
+ *   websocket_bidi  Gemini Live. Mint at POST /v1beta/auth_tokens, then the
+ *                   browser opens a WSS connection to
+ *                   ...GenerativeService.BidiGenerateContentConstrained and hand-
+ *                   frames base64 PCM16 @16kHz; tool calls arrive as toolCall
+ *                   messages on the same socket.
+ *
+ * A provider declares what it SPEAKS; SUPPORTED_REALTIME_TRANSPORTS declares what
+ * this build IMPLEMENTS. Only the intersection can serve a mic — so declaring a
+ * transport can never hand the browser a session it cannot actually run.
+ *
+ * @typedef {'webrtc_sdp'|'websocket_bidi'} RealtimeTransport
+ */
 
 /**
  * @typedef {object} AiProviderCapabilities
  * @property {boolean} catalog  Can enumerate models (`GET {baseUrl}/models`).
  * @property {boolean} text     Can serve one-shot text completions.
- * @property {boolean} realtime Can mint WebRTC Realtime client secrets.
+ * @property {boolean} realtime Can serve a voice session THIS BUILD can run.
  * @property {boolean} audioChat Can return audio from chat/completions.
  */
 
@@ -47,6 +70,7 @@
  * @property {readonly string[]} keyEnvVars   Checked in order; first non-empty wins.
  * @property {string|null} baseUrlEnvVar      Env var that may override the base URL.
  * @property {AiProviderCapabilities} capabilities
+ * @property {RealtimeTransport|null} realtimeTransport  What it speaks, if anything.
  * @property {string} docsUrl
  * @property {'chat'|'responses'} textApi     Which completion shape the provider speaks.
  */
@@ -64,6 +88,21 @@ export const DEFAULT_AI_PROVIDER = 'openrouter';
 export const OPENROUTER_APP_TITLE = "God's Eye View";
 export const OPENROUTER_APP_URL = 'https://github.com/bilawalsidhu/gods-eye-view';
 
+/**
+ * The realtime transports THIS BUILD can actually run end to end.
+ *
+ * `src/voice/gevRealtime.js` implements exactly one: an RTCPeerConnection with
+ * media tracks and a data channel. Adding 'websocket_bidi' here is a promise
+ * that a Gemini Live client exists — do not add it before one does, or
+ * resolveRealtimeProvider will hand the browser a session it cannot run.
+ */
+export const SUPPORTED_REALTIME_TRANSPORTS = Object.freeze(['webrtc_sdp']);
+
+/** True only for a transport this build implements. */
+export function isSupportedRealtimeTransport(transport) {
+  return SUPPORTED_REALTIME_TRANSPORTS.includes(transport);
+}
+
 /** @type {Readonly<Record<AiProviderId, AiProviderDefinition>>} */
 export const AI_PROVIDERS = Object.freeze({
   openrouter: Object.freeze({
@@ -74,10 +113,11 @@ export const AI_PROVIDERS = Object.freeze({
     baseUrlEnvVar: 'OPENROUTER_BASE_URL',
     docsUrl: 'https://openrouter.ai/keys',
     textApi: 'chat',
+    // No live-session endpoint of any kind. See the module header.
+    realtimeTransport: null,
     capabilities: Object.freeze({
       catalog: true,
       text: true,
-      // No client-secret/SDP endpoint. See the module header.
       realtime: false,
       audioChat: true,
     }),
@@ -90,10 +130,33 @@ export const AI_PROVIDERS = Object.freeze({
     baseUrlEnvVar: 'OPENAI_BASE_URL',
     docsUrl: 'https://platform.openai.com/api-keys',
     textApi: 'responses',
+    realtimeTransport: 'webrtc_sdp',
     capabilities: Object.freeze({
       catalog: true,
       text: true,
       realtime: true,
+      audioChat: true,
+    }),
+  }),
+  'google-gemini': Object.freeze({
+    id: 'google-gemini',
+    label: 'Google Gemini',
+    // Google's OpenAI-compatibility layer: /models and /chat/completions both
+    // work through the same adapter as every other provider here, verified
+    // against https://ai.google.dev/gemini-api/docs/openai on 2026-09-10.
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    keyEnvVars: Object.freeze(['GEMINI_API_KEY', 'GOOGLE_AI_API_KEY']),
+    baseUrlEnvVar: 'GEMINI_BASE_URL',
+    docsUrl: 'https://aistudio.google.com/apikey',
+    textApi: 'chat',
+    // Gemini Live is a real live-voice API, but over WSS with hand-framed PCM —
+    // NOT the WebRTC/SDP path this build implements. Declared honestly so the
+    // registry can say so; `realtime` below stays false until a client exists.
+    realtimeTransport: 'websocket_bidi',
+    capabilities: Object.freeze({
+      catalog: true,
+      text: true,
+      realtime: false,
       audioChat: true,
     }),
   }),
@@ -107,11 +170,13 @@ export const AI_PROVIDERS = Object.freeze({
     baseUrlEnvVar: 'GEV_AI_BASE_URL',
     docsUrl: 'https://platform.openai.com/docs/api-reference',
     textApi: 'chat',
+    // A gateway that proxies OpenAI's Realtime endpoints speaks the transport
+    // we implement — but only claims it when GEV_AI_REALTIME=1 says so.
+    realtimeTransport: 'webrtc_sdp',
     capabilities: Object.freeze({
       catalog: true,
       text: true,
-      // Opt-in: only a gateway that proxies OpenAI's Realtime endpoints can
-      // serve the mic. Enabled with GEV_AI_REALTIME=1 (see resolveProvider).
+      // Opt-in: see resolveAiProvider.
       realtime: false,
       audioChat: true,
     }),
@@ -128,10 +193,22 @@ export const AI_REALTIME_OPT_IN_ENV_VAR = 'GEV_AI_REALTIME';
  * Order used when no provider is named explicitly: OpenRouter first (the
  * documented default), then a direct OpenAI key, then a custom gateway.
  */
-const AUTO_DETECT_ORDER = Object.freeze(['openrouter', 'openai', 'openai-compatible']);
+const AUTO_DETECT_ORDER = Object.freeze([
+  'openrouter', 'openai', 'google-gemini', 'openai-compatible',
+]);
 
 /** Realtime search order — most likely to actually serve a mic session first. */
 const REALTIME_ORDER = Object.freeze(['openai', 'openai-compatible']);
+
+/**
+ * Providers that speak a live-voice transport this build cannot run.
+ *
+ * Kept separate from REALTIME_ORDER on purpose: these must never be SELECTED,
+ * but the token endpoint uses them to explain WHY the mic is unavailable —
+ * "Gemini Live needs the websocket_bidi transport" beats "no provider found"
+ * when the user has a Gemini key sitting right there.
+ */
+const REALTIME_UNIMPLEMENTED_ORDER = Object.freeze(['google-gemini']);
 
 /** True only for a provider id this build registers (own properties only). */
 export function isKnownAiProvider(id) {
@@ -204,12 +281,17 @@ export function resolveAiProvider(id, env = {}) {
   );
   const apiKey = readEnv(env, definition.keyEnvVars);
   const realtimeOptIn = isTruthyFlag(env?.[AI_REALTIME_OPT_IN_ENV_VAR]);
-  const capabilities = Object.freeze({
-    ...definition.capabilities,
+  const declaredRealtime = definition.capabilities.realtime
     // Only the generic gateway can be *granted* realtime — flipping the flag
     // must never claim OpenRouter can mint a client secret.
-    realtime: definition.capabilities.realtime
-      || (definition.id === 'openai-compatible' && realtimeOptIn),
+    || (definition.id === 'openai-compatible' && realtimeOptIn);
+  const capabilities = Object.freeze({
+    ...definition.capabilities,
+    // The transport gate is final: a provider may declare a live-voice API, and
+    // an operator may opt a gateway in, but if this build has no client for that
+    // transport the answer is still no. This is what stops a Gemini key from
+    // being handed to a WebRTC dialer that would silently never connect.
+    realtime: declaredRealtime && isSupportedRealtimeTransport(definition.realtimeTransport),
   });
   return {
     id: definition.id,
@@ -219,10 +301,29 @@ export function resolveAiProvider(id, env = {}) {
     // A key alone is not enough: the generic gateway also needs a base URL.
     configured: Boolean(apiKey && baseUrl),
     capabilities,
+    realtimeTransport: definition.realtimeTransport,
     textApi: definition.textApi,
     docsUrl: definition.docsUrl,
     keyEnvVar: definition.keyEnvVars[0],
   };
+}
+
+/**
+ * A configured provider that speaks a live-voice transport this build cannot
+ * run, or null. Used only to explain an unavailable mic — never to serve one.
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {ReturnType<typeof resolveAiProvider>|null}
+ */
+export function resolveUnsupportedRealtimeProvider(env = {}) {
+  for (const id of REALTIME_UNIMPLEMENTED_ORDER) {
+    const provider = resolveAiProvider(id, env);
+    if (provider.configured && provider.realtimeTransport
+      && !isSupportedRealtimeTransport(provider.realtimeTransport)) {
+      return provider;
+    }
+  }
+  return null;
 }
 
 /** Accept the usual truthy spellings of an env flag. */
@@ -294,6 +395,7 @@ export function describeAiProvider(provider) {
     baseUrl: provider.baseUrl,
     configured: provider.configured,
     capabilities: { ...provider.capabilities },
+    realtimeTransport: provider.realtimeTransport,
     keyEnvVar: provider.keyEnvVar,
     docsUrl: provider.docsUrl,
     ...(provider.source ? { source: provider.source } : {}),
@@ -320,5 +422,7 @@ export function aiProviderHeaders(provider, extra = {}) {
   if (provider.id === 'openai') {
     headers['OpenAI-Safety-Identifier'] = 'gev-local-dev';
   }
+  // Gemini's OpenAI-compat layer takes the key as a normal bearer token, so it
+  // needs nothing extra here — the default Authorization header above is it.
   return headers;
 }
