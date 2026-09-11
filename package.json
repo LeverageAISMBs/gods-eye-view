@@ -35,6 +35,7 @@
     "doctor": "node scripts/setup-doctor.mjs",
     "dev": "vite",
     "gev": "node scripts/gev-cli.mjs",
+    "gev:mcp": "node scripts/gev-mcp.mjs",
     "dev:secure": "./scripts/dev-secure.sh",
     "opensky:import": "./scripts/opensky-import-client.sh",
     "build": "vite build",
@@ -52,6 +53,7 @@
     "satellite.js": "^6.0.2"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
     "puppeteer": "^24.37.5",
     "sharp": "^0.34.5",
     "vite": "^6.0.0",

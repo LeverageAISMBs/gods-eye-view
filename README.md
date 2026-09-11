@@ -403,6 +403,34 @@ command is printed, because the frames are the deliverable either way.
 drive it. `gev tools --json` returns the full JSON schemas, so an agent can
 discover the surface rather than be told it.
 
+### Or connect an agent over MCP
+
+The same 28 capabilities are served over the [Model Context Protocol](https://modelcontextprotocol.io),
+so an agent drives the globe natively instead of shelling out:
+
+```json
+{
+  "mcpServers": {
+    "gods-eye-view": {
+      "command": "node",
+      "args": ["scripts/gev-mcp.mjs"],
+      "env": { "GEV_MCP_URL": "http://localhost:5173" }
+    }
+  }
+}
+```
+
+Thirty tools: GEV's 28, plus `gev_session_status` and `gev_screenshot`. The
+screenshot matters — tool results *describe* state, the picture *shows* it, and
+the camera state travels with the image so the agent can still reason
+numerically.
+
+Every call lands on **one long-lived browser session**, which is what makes
+"fly to Austin, turn on flights, now show me" mean anything. It boots lazily on
+the first tool call, survives a crashed tab, and closes after 15 minutes idle
+(`GEV_MCP_IDLE_MS`). Registration is a translation of the same tool list the
+voice model gets, so a new GEV capability appears over MCP for free.
+
 Notes worth knowing before your first take:
 
 - **Capture on a GPU machine.** The CLI runs without one (it permits Chrome's
