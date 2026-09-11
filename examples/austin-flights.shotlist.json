@@ -1,0 +1,13 @@
+{
+  "name": "austin-flights",
+  "viewport": { "width": 1920, "height": 1080 },
+  "capture": { "fps": 30 },
+  "steps": [
+    { "label": "clean plate", "tool": "set_hud", "args": { "enabled": false }, "settleMs": 500 },
+    { "label": "establish", "tool": "zoom_to_globe", "settleMs": 4000 },
+    { "label": "live traffic overhead", "tool": "set_layer_visibility", "args": { "layerId": "flights", "enabled": true }, "settleMs": 2000 },
+    { "label": "descend on Austin", "tool": "fly_to_location", "args": { "query": "Austin, Texas" }, "settleMs": 6000 },
+    { "label": "hero orbit", "tool": "move_camera", "args": { "motion": "orbit" }, "record": true, "durationMs": 10000 },
+    { "label": "hold on the skyline", "hold": 2500, "record": true }
+  ]
+}

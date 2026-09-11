@@ -21,6 +21,8 @@ import { SceneDirector } from './scenes/director.js';
 import { initGevVoiceCommands } from './voice/gevRealtime.js';
 import { MapStackController } from './mapStackController.js';
 import { initAnnotations } from './annotations/index.js';
+import { installAgentBridge } from './agentBridge.js';
+import { createGevActionRunner } from './voice/gevActions.js';
 import { initLogoGaze } from './logoGaze.js';
 import { initCockpitCloudEffects } from './cockpitCloudEffects.js';
 import {
@@ -327,6 +329,12 @@ async function init() {
       requestRender: governorRequestRender,
     };
     window.__godsEyeView.voiceCommands = initGevVoiceCommands({ viewer, styleManager, dataManager, sceneDirector, annotations });
+    // The same 28 capabilities, reachable without the voice controller: the CLI
+    // drives this over CDP. Built on its own runner so an unconfigured or
+    // stopped mic never takes the agent surface down with it.
+    installAgentBridge({
+      runner: createGevActionRunner({ viewer, styleManager, dataManager, sceneDirector, annotations }),
+    });
 
   } catch (error) {
     console.error("God's Eye View initialization failed:", error);

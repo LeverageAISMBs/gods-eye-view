@@ -48,6 +48,21 @@ import { defineConfig, loadEnv } from 'vite';
 import cesium from 'vite-plugin-cesium';
 import { normalizeRadioCountryInput } from './src/data/radioCountry.js';
 import {
+  AI_PROVIDER_IDS,
+  describeAiProvider,
+  resolveAiProvider,
+  resolveDefaultAiProvider,
+  resolveRealtimeProvider,
+  resolveUnsupportedRealtimeProvider,
+} from './src/ai/providers.mjs';
+import {
+  AiProviderError,
+  completeText,
+  fetchVoiceCatalog,
+  mintRealtimeSecret,
+} from './src/ai/providerFetch.mjs';
+import { normalizeVoiceDirection } from './src/ai/voiceCatalog.mjs';
+import {
   normalizeRegionalArticles,
   normalizeRegionalPlace,
   normalizeRegionalWeather,
@@ -1380,6 +1395,20 @@ const OPENAI_REALTIME_REASONING_DEFAULT = 'low';
 const OPENAI_REALTIME_CONTEXT_TOKENS_DEFAULT = 3000;
 const OPENAI_REALTIME_CONTEXT_RETENTION_DEFAULT = 0.5;
 const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
+/**
+ * The HUD summary model, per provider. A model id is NOT portable across
+ * providers — OpenRouter namespaces the same model as `openai/gpt-5-nano` — so
+ * OPENAI_HUD_SUMMARY_MODEL stays scoped to the OpenAI adapter and
+ * GEV_HUD_SUMMARY_MODEL is the provider-agnostic override.
+ */
+const HUD_SUMMARY_MODEL_DEFAULTS = Object.freeze({
+  openrouter: 'openai/gpt-5-nano',
+  openai: OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
+  // Gemini's OpenAI-compat layer takes bare Gemini model ids.
+  'google-gemini': 'gemini-2.5-flash-lite',
+  // A private gateway names its own models; there is nothing sane to guess.
+  'openai-compatible': '',
+});
 const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.gev-logs');
 const REALTIME_DEBUG_LOG_FILE = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
 const REALTIME_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
@@ -5054,11 +5083,46 @@ function trackBackfillProxies() {
   };
 }
 
+/** Resolve the HUD-summary model for a provider, honouring both overrides. */
+function hudSummaryModelFor(provider) {
+  const shared = String(process.env.GEV_HUD_SUMMARY_MODEL || '').trim();
+  if (shared) return shared;
+  if (provider.id === 'openai') {
+    const legacy = String(process.env.OPENAI_HUD_SUMMARY_MODEL || '').trim();
+    if (legacy) return legacy;
+  }
+  return HUD_SUMMARY_MODEL_DEFAULTS[provider.id] || '';
+}
+
+/** Write a typed provider failure as JSON without leaking the API key. */
+function sendProviderError(res, error, fallbackStatus = 502) {
+  const typed = error instanceof AiProviderError;
+  // 401/403 from the provider is a config problem, not a gateway problem —
+  // pass it through so the browser can say "check your key" rather than
+  // "upstream is down".
+  const status = typed && error.status >= 400 && error.status < 500
+    ? error.status
+    : fallbackStatus;
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(JSON.stringify(typed
+    ? error.toJSON()
+    : { error: error?.message || 'AI provider request failed', code: 'PROVIDER_UNKNOWN_ERROR' }));
+}
+
 /**
- * Vite plugin: OpenAI Realtime ephemeral client secret.
+ * Vite plugin: AI provider adapter — model catalog, HUD text, and the Realtime
+ * ephemeral client secret.
  *
- * Keeps OPENAI_API_KEY server-side while the browser connects to the
- * Realtime API over WebRTC with a short-lived secret.
+ * Keeps every provider key server-side. The default provider (OpenRouter unless
+ * GEV_AI_PROVIDER says otherwise) serves the catalog and the HUD summary; the
+ * mic resolves its provider independently, because minting a WebRTC client
+ * secret is an OpenAI-shaped capability that OpenRouter does not expose. See
+ * src/ai/providers.mjs for the full reasoning.
+ *
+ * The export name is unchanged so the plugin list and its route tests keep
+ * working across this change.
  */
 export function openAiRealtimeProxy() {
   function install(middlewares) {
@@ -5070,8 +5134,8 @@ export function openAiRealtimeProxy() {
         return;
       }
 
-      const apiKey = process.env.OPENAI_API_KEY;
-      const keyless = keylessHudSummaryResponse(apiKey);
+      const provider = resolveDefaultAiProvider(process.env);
+      const keyless = keylessHudSummaryResponse(provider.configured ? provider.apiKey : '');
       if (keyless) {
         res.statusCode = keyless.statusCode;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -5088,39 +5152,106 @@ export function openAiRealtimeProxy() {
       try {
         const body = await readRequestBody(req, 64 * 1024);
         const context = JSON.parse(body || '{}');
-        const response = await fetch('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: process.env.OPENAI_HUD_SUMMARY_MODEL || OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
-            instructions: [
-              "Write one concise intelligence-HUD summary for God's Eye View.",
-              'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
-              'Prefer the clearest named place and include a relevant enabled layer only when useful.',
-              'Do not infer from coordinates or invent a place.',
-              'Output exactly five words with no title, punctuation, markdown, or introductory phrase.',
-            ].join(' '),
-            input: JSON.stringify(context),
-            reasoning: { effort: 'minimal' },
-            max_output_tokens: 100,
-          }),
+        const completion = await completeText({
+          provider,
+          model: hudSummaryModelFor(provider),
+          instructions: [
+            "Write one concise intelligence-HUD summary for God's Eye View.",
+            'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
+            'Prefer the clearest named place and include a relevant enabled layer only when useful.',
+            'Do not infer from coordinates or invent a place.',
+            'Output exactly five words with no title, punctuation, markdown, or introductory phrase.',
+          ].join(' '),
+          input: JSON.stringify(context),
+          maxOutputTokens: 100,
         });
-        const data = await response.json().catch(() => ({}));
-        const summary = toFiveWordHudSummary(extractOpenAiResponseText(data));
-        res.statusCode = response.ok && summary ? 200 : response.status || 502;
+        const summary = toFiveWordHudSummary(completion.text);
+        res.statusCode = summary ? 200 : 502;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store');
         res.end(JSON.stringify({
           summary: summary || null,
-          error: response.ok ? null : data.error?.message || 'OpenAI HUD summary request failed',
+          error: summary ? null : `${provider.label} returned no usable HUD summary`,
         }));
       } catch (error) {
-        res.statusCode = 502;
+        sendProviderError(res, error);
+      }
+    });
+
+    // Which provider is serving what, with no keys in the payload. The browser
+    // uses this to label the voice panel and to explain an unconfigured mic.
+    middlewares.use('/api/ai/providers', (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: error?.message || 'OpenAI HUD summary request failed' }));
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      const realtime = resolveRealtimeProvider(process.env);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({
+        default: describeAiProvider(resolveDefaultAiProvider(process.env)),
+        realtime: realtime ? describeAiProvider(realtime) : null,
+        available: AI_PROVIDER_IDS.map((id) => describeAiProvider(resolveAiProvider(id, process.env))),
+      }));
+    });
+
+    // Every voice-capable model the configured provider can reach, normalised
+    // and priced. `?direction=input|output|any`, `?provider=<id>`, `?refresh=1`.
+    middlewares.use('/api/ai/voice-models', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
+
+      const query = (() => {
+        try {
+          return new URL(req.url || '', 'http://localhost').searchParams;
+        } catch {
+          return new URLSearchParams();
+        }
+      })();
+      const requestedProvider = query.get('provider');
+      // An explicit ?provider= names WHICH adapter to list; anything unknown
+      // resolves to the configured default rather than reaching a provider.
+      const provider = requestedProvider
+        ? resolveAiProvider(requestedProvider, process.env)
+        : resolveDefaultAiProvider(process.env);
+
+      if (!provider.configured) {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        // Not an error: a keyless boot is a supported way to run GEV.
+        res.end(JSON.stringify({
+          configured: false,
+          provider: provider.id,
+          providerLabel: provider.label,
+          keyEnvVar: provider.keyEnvVar,
+          docsUrl: provider.docsUrl,
+          models: [],
+          total: 0,
+        }));
+        return;
+      }
+
+      try {
+        const catalog = await fetchVoiceCatalog({
+          provider,
+          direction: normalizeVoiceDirection(query.get('direction')),
+          refresh: query.get('refresh') === '1',
+        });
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({ configured: true, ...catalog }));
+      } catch (error) {
+        sendProviderError(res, error);
       }
     });
 
@@ -5160,11 +5291,31 @@ export function openAiRealtimeProxy() {
       // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) {
+      // Voice resolves its provider INDEPENDENTLY of the default one: minting a
+      // WebRTC client secret is an OpenAI-shaped capability, so an install whose
+      // default is OpenRouter still runs the mic on its OpenAI key.
+      const provider = resolveRealtimeProvider(process.env);
+      if (!provider) {
+        // A configured provider may have a live-voice API this build has no
+        // client for (Gemini Live speaks WSS, not WebRTC/SDP). Saying THAT beats
+        // "no provider found" when the user has that key sitting right there.
+        const unrunnable = resolveUnsupportedRealtimeProvider(process.env);
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'OPENAI_API_KEY is not set' }));
+        res.end(JSON.stringify(unrunnable
+          ? {
+            error: `${unrunnable.label} has a live-voice API, but over the `
+              + `${unrunnable.realtimeTransport} transport, which this build does not `
+              + 'implement. Voice needs OPENAI_API_KEY.',
+            code: 'REALTIME_TRANSPORT_UNSUPPORTED',
+            provider: unrunnable.id,
+            transport: unrunnable.realtimeTransport,
+          }
+          : {
+            error: 'Voice control needs a Realtime-capable provider — set OPENAI_API_KEY '
+              + '(OpenRouter has no Realtime API)',
+            code: 'REALTIME_NOT_CONFIGURED',
+          }));
         return;
       }
 
@@ -5290,32 +5441,25 @@ export function openAiRealtimeProxy() {
       };
 
       try {
-        const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'OpenAI-Safety-Identifier': 'gev-local-dev',
-          },
-          body: JSON.stringify(sessionConfig),
-        });
-        const body = await response.text();
-        res.statusCode = response.status;
-        res.setHeader('Content-Type', response.headers.get('content-type') || 'application/json');
+        const minted = await mintRealtimeSecret({ provider, sessionConfig });
+        res.statusCode = minted.status;
+        res.setHeader('Content-Type', minted.contentType);
         // Which tier/model this secret was actually minted for. The upstream
         // body is passed through untouched (the client parses it verbatim), so
         // these headers are the authoritative echo — including the case where a
         // bogus ?tier= was silently downgraded to standard.
         res.setHeader('X-GEV-Voice-Tier', tier);
         res.setHeader('X-GEV-Voice-Model', model);
+        res.setHeader('X-GEV-Voice-Provider', provider.id);
+        // Where the browser posts its SDP offer. A gateway provider serves the
+        // call on ITS origin, so the client must not assume api.openai.com.
+        res.setHeader('X-GEV-Realtime-Calls-Url', `${provider.baseUrl}/realtime/calls`);
         if (requestedTier && !isKnownVoiceTier(requestedTier)) {
           res.setHeader('X-GEV-Voice-Tier-Fallback', '1');
         }
-        res.end(body);
+        res.end(minted.text);
       } catch (error) {
-        res.statusCode = 502;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: error?.message || 'Failed to create Realtime token' }));
+        sendProviderError(res, error, 502);
       }
     });
   }
@@ -5329,18 +5473,6 @@ export function openAiRealtimeProxy() {
       install(server.middlewares);
     },
   };
-}
-
-function extractOpenAiResponseText(data) {
-  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim();
-  }
-  if (!Array.isArray(data?.output)) return '';
-  return data.output
-    .flatMap((item) => Array.isArray(item?.content) ? item.content : [])
-    .map((part) => part?.text || part?.output_text || '')
-    .join(' ')
-    .trim();
 }
 
 function toFiveWordHudSummary(value) {
@@ -5661,7 +5793,9 @@ function approximateDistanceM(latA, lonA, latB, lonB) {
   ));
 }
 
-const GEV_REALTIME_TOOLS = [
+// Exported so the CLI can serve the same schemas to an agent that the voice
+// model gets — one definition, no second copy to drift.
+export const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'fly_to_location',

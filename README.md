@@ -32,7 +32,7 @@ Photorealistic 3D globe. Live aircraft, ships, satellites, earthquakes, traffic,
 
 <div align="center">
 
-**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Under the Hood](#-under-the-hood) · [Keys & Costs](#-api-keys)**
+**[Quick Start](#-quick-start) · [First Five Minutes](#-the-first-five-minutes) · [Talk to It](#-talk-to-it) · [What's Live](#-whats-on-the-globe) · [Drive It From a CLI](#-drive-it-from-a-cli) · [Under the Hood](#-under-the-hood) · [Keys & Costs](#-api-keys)**
 
 </div>
 
@@ -364,6 +364,88 @@ See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runti
 
 ---
 
+## 🤖 Drive It From a CLI
+
+Everything the voice model can do, `gev` can do from a command line — so an AI
+agent can operate the globe, monitor a place, and capture footage for a video
+pipeline.
+
+```bash
+npm run dev                                   # in one terminal
+npm run gev -- tools                          # the 28 drivable tools
+npm run gev -- exec fly_to_location --args '{"query":"Austin, Texas"}'
+npm run gev -- record examples/austin-flights.shotlist.json --out takes/austin
+```
+
+A **shot list** is the instruction format: an ordered plan of tool calls, waits,
+and capture windows. Steps marked `"record": true` are the ones that become
+footage — setup moves are not filmed.
+
+```json
+{
+  "name": "austin-flights",
+  "viewport": { "width": 1920, "height": 1080 },
+  "capture": { "fps": 30 },
+  "steps": [
+    { "tool": "set_layer_visibility", "args": { "layerId": "flights", "enabled": true } },
+    { "tool": "fly_to_location", "args": { "query": "Austin, Texas" }, "settleMs": 6000 },
+    { "tool": "move_camera", "args": { "motion": "orbit" }, "record": true, "durationMs": 10000 }
+  ]
+}
+```
+
+The run writes numbered PNG frames and, when `ffmpeg` is on PATH, encodes an
+H.264 master (`-crf 16`, `yuv420p`, faststart) sized for re-encoding downstream.
+**ffmpeg is optional** — without it the frames are kept and the exact encode
+command is printed, because the frames are the deliverable either way.
+
+`--json` makes every command machine-readable, which is how an agent should
+drive it. `gev tools --json` returns the full JSON schemas, so an agent can
+discover the surface rather than be told it.
+
+### Or connect an agent over MCP
+
+The same 28 capabilities are served over the [Model Context Protocol](https://modelcontextprotocol.io),
+so an agent drives the globe natively instead of shelling out:
+
+```json
+{
+  "mcpServers": {
+    "gods-eye-view": {
+      "command": "node",
+      "args": ["scripts/gev-mcp.mjs"],
+      "env": { "GEV_MCP_URL": "http://localhost:5173" }
+    }
+  }
+}
+```
+
+Thirty tools: GEV's 28, plus `gev_session_status` and `gev_screenshot`. The
+screenshot matters — tool results *describe* state, the picture *shows* it, and
+the camera state travels with the image so the agent can still reason
+numerically.
+
+Every call lands on **one long-lived browser session**, which is what makes
+"fly to Austin, turn on flights, now show me" mean anything. It boots lazily on
+the first tool call, survives a crashed tab, and closes after 15 minutes idle
+(`GEV_MCP_IDLE_MS`). Registration is a translation of the same tool list the
+voice model gets, so a new GEV capability appears over MCP for free.
+
+Notes worth knowing before your first take:
+
+- **Capture on a GPU machine.** The CLI runs without one (it permits Chrome's
+  SwiftShader fallback, or Cesium will not start at all), but software rendering
+  is slow and the frames look flat.
+- The first-run launcher is suppressed automatically — it otherwise sits in the
+  middle of every frame. Pass `--show-first-run` to film it deliberately.
+- Hide the HUD for clean plates with a `set_hud` step; it is a tool like any
+  other.
+- `settleMs` waits for the globe to stop streaming tiles before the next step.
+  Cutting while terrain is still resolving is the fastest way to make footage
+  look cheap.
+
+---
+
 ## 🔑 API Keys
 
 🟢 **No key** · 🟡 **Free key** · 🔴 **Metered**
@@ -375,13 +457,15 @@ and configuration details.
 
 ### Choose the capabilities you want
 
-Six keys. Four have a free tier, and the two 🔴 ones are metered:
+Eight keys. Four have a free tier, and the four 🔴 ones are metered:
 
 | | Key | Why | Get it |
 |---|-----|-----|--------|
 | 🟡 | **Cesium ion** | 🗺️ Google Photorealistic 3D, world terrain, and additional ion-hosted imagery stacks. The free Community plan is for eligible individual, personal/non-commercial use and has quotas | [cesium.com/ion](https://cesium.com/ion) — use a public `assets:read` token and check current [pricing/eligibility](https://cesium.com/platform/cesium-ion/pricing/) |
 | 🔴 | **Google Maps** | Direct Google Photorealistic 3D + Google place search ([Map Tiles API](https://developers.google.com/maps/documentation/tile)) | [Google Cloud Console](https://console.cloud.google.com/) — URL-restrict it |
-| 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. The mini model works; the standard model is noticeably smarter. Want Gemini or another provider behind the mic? PRs welcome | [platform.openai.com](https://platform.openai.com) — metered, see costs below |
+| 🔴 | **OpenRouter** | 🧠 One key for every model. Serves the AI HUD summary and the voice-model catalog (`/api/ai/voice-models` lists every voice-capable model it can reach, with pricing). **Default provider** — see [Provider adapter](#provider-adapter) | [openrouter.ai/keys](https://openrouter.ai/keys) — metered |
+| 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. The mini model works; the standard model is noticeably smarter. Still required for the mic on any install: OpenRouter has no Realtime API | [platform.openai.com](https://platform.openai.com) — metered, see costs below |
+| 🔴 | **Google Gemini** | 🧠 Gemini models for the AI HUD summary and the model catalog, via Google's OpenAI-compatibility layer. Not the mic — see below | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — metered |
 | 🟡 | **AISStream** | 🚢 Live global ships | [aisstream.io](https://aisstream.io) — free signup |
 | 🟡 | **NASA FIRMS** | 🔥 Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov/api/map_key/) — free |
 | 🟡 | **TomTom** | 🚦 Live flow speeds and congestion colors for the simulated traffic layer | [developer.tomtom.com](https://developer.tomtom.com) — free tier available |
@@ -389,6 +473,49 @@ Six keys. Four have a free tier, and the two 🔴 ones are metered:
 ![Diving from city-scale live congestion straight into an intersection's public camera](docs/media/05-traffic-to-cctv.gif)
 
 *What the TomTom key buys you: rush-hour density painted on the city — then dive from the jam straight into the camera watching it.*
+
+### Provider adapter
+
+GEV talks to a model provider on three planes, and they resolve **separately**:
+
+| Plane | What it does | Who serves it |
+|---|---|---|
+| Catalog | Lists every voice-capable model, with pricing (`/api/ai/voice-models`) | The default provider |
+| Text | The five-word AI HUD summary (`/api/openai/hud-summary`) | The default provider |
+| Realtime voice | Mints the ephemeral WebRTC secret behind the mic (`/api/realtime/token`) | The first provider that *can* |
+
+`GEV_AI_PROVIDER` picks the default — `openrouter` (the default), `openai`,
+`google-gemini`, or `openai-compatible` for any gateway you point at with
+`GEV_AI_BASE_URL` (Azure OpenAI, LiteLLM, vLLM, Ollama). Unset, it auto-detects
+in that order by which key is present.
+
+**Live voice is a named transport, not a checkbox.** A provider declares which
+one it speaks, and GEV only selects a provider whose transport it actually
+implements:
+
+| Transport | Who speaks it | Runs the mic today |
+|---|---|---|
+| `webrtc_sdp` | OpenAI Realtime, and gateways proxying it | ✅ |
+| `websocket_bidi` | Gemini Live | ❌ no client in this build |
+| *(none)* | OpenRouter | ❌ no live-voice API at all |
+
+Gemini Live is a real live-voice API — it just isn't the same shape. It mints at
+`POST /v1beta/auth_tokens`, connects over WSS to
+`BidiGenerateContentConstrained`, and carries hand-framed base64 PCM16 @16 kHz
+with tool calls as socket messages. OpenAI Realtime mints a client secret, then
+exchanges an SDP offer and runs media tracks plus a data channel. Supporting
+both means two voice clients, not one adapter — so a Gemini key powers the
+catalog and HUD summaries, and `/api/realtime/token` says exactly that rather
+than handing the browser a session it cannot run.
+
+**The mic is the exception, and deliberately so.** A Realtime session is a
+WebRTC transport minted from `/realtime/client_secrets` — not part of the
+OpenAI-compatible surface. OpenRouter's audio support is turn-based
+`chat/completions` with `modalities: ["text","audio"]`, which is a different
+thing. So voice resolves its own provider: adding an OpenRouter key moves the
+catalog and the HUD summary without touching a mic that already runs on
+`OPENAI_API_KEY`. `GET /api/ai/providers` reports exactly which provider is
+serving which plane, with no keys in the payload.
 
 ### Cherry on top
 

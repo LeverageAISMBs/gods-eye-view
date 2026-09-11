@@ -97,9 +97,13 @@ test('does not hide real provider and HTTP failures', () => {
 });
 
 test('the installed keyless HUD route stays successful after the voice quota is exhausted', async () => {
-  const previousKey = process.env.OPENAI_API_KEY;
-  const previousLimit = process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
+  const previousEnv = { ...process.env };
+  // Every provider adapter must be keyless for this to test the keyless path —
+  // a stray OPENROUTER_API_KEY in the shell would otherwise reach the network.
   process.env.OPENAI_API_KEY = '';
+  process.env.OPENROUTER_API_KEY = '';
+  process.env.GEV_AI_API_KEY = '';
+  process.env.GEV_AI_PROVIDER = '';
   process.env.GEV_RATELIMIT_OPENAI_PER_MIN = '1';
   try {
     const routes = installOpenAiRoutes();
@@ -111,7 +115,10 @@ test('the installed keyless HUD route stays successful after the voice quota is 
     const firstToken = await invokeRoute(token);
     const secondToken = await invokeRoute(token);
     assert.equal(firstToken.statusCode, 503);
-    assert.deepEqual(firstToken.body, { error: 'OPENAI_API_KEY is not set' });
+    // Voice needs a Realtime-capable provider specifically: OpenRouter can be
+    // the default for the catalog and the HUD summary and still not serve a mic.
+    assert.equal(firstToken.body.code, 'REALTIME_NOT_CONFIGURED');
+    assert.match(firstToken.body.error, /OPENAI_API_KEY/);
     assert.equal(secondToken.statusCode, 429);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -122,9 +129,15 @@ test('the installed keyless HUD route stays successful after the voice quota is 
       assert.deepEqual(response.body, UNCONFIGURED_PAYLOAD);
     }
   } finally {
-    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousKey;
-    if (previousLimit === undefined) delete process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
-    else process.env.GEV_RATELIMIT_OPENAI_PER_MIN = previousLimit;
+    for (const name of [
+      'OPENAI_API_KEY',
+      'OPENROUTER_API_KEY',
+      'GEV_AI_API_KEY',
+      'GEV_AI_PROVIDER',
+      'GEV_RATELIMIT_OPENAI_PER_MIN',
+    ]) {
+      if (previousEnv[name] === undefined) delete process.env[name];
+      else process.env[name] = previousEnv[name];
+    }
   }
 });

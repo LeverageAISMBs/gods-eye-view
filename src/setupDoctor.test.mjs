@@ -150,6 +150,7 @@ test('doctor describes the credential ladder without exposing values', () => {
     GOOGLE_MAPS_API_KEY: { configured: false },
     CESIUM_ION_TOKEN: { configured: true, source: 'environment' },
     OPENAI_API_KEY: { configured: true, source: 'dotenv files' },
+    OPENROUTER_API_KEY: { configured: true, source: 'environment' },
     AISSTREAM_API_KEY: { configured: false },
     FIRMS_MAP_KEY: { configured: false },
     TOMTOM_API_KEY: { configured: false },
@@ -193,6 +194,7 @@ test('doctor sends Keychain-backed reports to dev-fresh and describes OpenSky as
     'GOOGLE_MAPS_API_KEY',
     'CESIUM_ION_TOKEN',
     'OPENAI_API_KEY',
+    'OPENROUTER_API_KEY',
     'AISSTREAM_API_KEY',
     'FIRMS_MAP_KEY',
     'TOMTOM_API_KEY',
@@ -224,6 +226,7 @@ test('doctor never calls a dependency-missing setup ready', () => {
     'GOOGLE_MAPS_API_KEY',
     'CESIUM_ION_TOKEN',
     'OPENAI_API_KEY',
+    'OPENROUTER_API_KEY',
     'AISSTREAM_API_KEY',
     'FIRMS_MAP_KEY',
     'TOMTOM_API_KEY',
@@ -242,4 +245,24 @@ test('doctor never calls a dependency-missing setup ready', () => {
   assert.match(output, /dependencies missing; run npm install/);
   assert.match(output, /Setup needs attention/);
   assert.doesNotMatch(output, /Ready\. Run/);
+});
+
+test('the OpenRouter row reports the model catalog, separately from voice', () => {
+  const credentials = { OPENROUTER_API_KEY: { configured: true, source: 'environment' } };
+  const capabilities = buildCapabilitySummary(credentials);
+  // An OpenRouter key powers the catalog; the mic still needs OpenAI.
+  assert.match(capabilities.models, /OpenRouter catalog/);
+  assert.match(capabilities.voice, /off until an OpenAI key is added/);
+
+  // A credentials map missing most rows must still render, not throw.
+  const output = formatSetupReport({
+    ready: true,
+    node: { level: 'ok', version: '24.14.0', summary: 'supported' },
+    npm: { available: true, version: '11.0.0' },
+    dependenciesInstalled: true,
+    capabilities,
+    credentials,
+  });
+  assert.match(output, /\[OK\] OpenRouter models \(environment\)/);
+  assert.match(output, /\[--\] OpenAI voice/);
 });
